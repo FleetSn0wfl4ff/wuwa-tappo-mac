@@ -119,6 +119,129 @@
   try {
     const windowLabel = window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label;
     if (windowLabel === 'login') {
+      // The official login SDK builds several third-party URLs as
+      // protocol-relative references ("//gcaptcha4.geetest.com/load?..."). On an
+      // https page those resolve to https:, but this page's origin is
+      // tauri://localhost, so they resolve to tauri://<host>/... and are answered
+      // by the app bundle instead of the real server: the JSONP callback never
+      // runs, the HTML response throws "Unexpected token '<'" and the captcha can
+      // never load. Pin every such URL back to https: before it is requested.
+      try {
+        const normalise = value => {
+          if (typeof value !== 'string') return value;
+          if (value.startsWith('//')) return `https:${value}`;
+          const resolved = /^tauri:\/\/([^/?#]+)(.*)$/.exec(value);
+          if (resolved && resolved[1] !== 'localhost') return `https://${resolved[1]}${resolved[2]}`;
+          const asset = /^\/?(captcha_v4\/.*|js\/gcaptcha4.*|v4\/.*)$/.exec(value);
+          return asset ? `https://static.geetest.com/${asset[1]}` : value;
+        };
+
+        const scriptDescriptor = Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype, 'src');
+        if (scriptDescriptor?.set) {
+          Object.defineProperty(HTMLScriptElement.prototype, 'src', {
+            configurable: true,
+            enumerable: scriptDescriptor.enumerable,
+            get: scriptDescriptor.get,
+            set(value) {
+              scriptDescriptor.set.call(this, normalise(value));
+            },
+          });
+        }
+        for (const constructor of ['HTMLImageElement', 'HTMLIFrameElement']) {
+          const proto = window[constructor]?.prototype;
+          const descriptor = proto ? Object.getOwnPropertyDescriptor(proto, 'src') : null;
+          if (!descriptor?.set) continue;
+          Object.defineProperty(proto, 'src', {
+            configurable: true,
+            enumerable: descriptor.enumerable,
+            get: descriptor.get,
+            set(value) {
+              descriptor.set.call(this, normalise(value));
+            },
+          });
+        }
+        const setAttribute = Element.prototype.setAttribute;
+        Element.prototype.setAttribute = function patchedSetAttribute(name, value) {
+          return setAttribute.call(this, name, /^(?:src|href)$/i.test(String(name)) ? normalise(value) : value);
+        };
+        // Some SDK resources are already resolved to tauri://<host>/... by the
+        // time they reach the DOM (and geetest also hands out document-relative
+        // puzzle paths), so normalise again right before insertion.
+        const normaliseElement = node => {
+          if (!node || node.nodeType !== 1) return;
+          for (const property of ['src', 'href']) {
+            let value;
+            try {
+              value = node[property];
+            } catch {
+              continue;
+            }
+            if (typeof value !== 'string') continue;
+            const fixed = normalise(value);
+            if (fixed === value) continue;
+            try {
+              node[property] = fixed;
+            } catch {
+              /* ignore */
+            }
+          }
+        };
+        const appendChild = Node.prototype.appendChild;
+        Node.prototype.appendChild = function patchedAppend(node) {
+          try {
+            normaliseElement(node);
+          } catch {
+            /* ignore */
+          }
+          return appendChild.call(this, node);
+        };
+        const insertBefore = Node.prototype.insertBefore;
+        Node.prototype.insertBefore = function patchedInsert(node, reference) {
+          try {
+            normaliseElement(node);
+          } catch {
+            /* ignore */
+          }
+          return insertBefore.call(this, node, reference);
+        };
+
+        const open = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function patchedOpen(method, url, ...rest) {
+          return open.call(this, method, normalise(url), ...rest);
+        };
+        if (typeof window.fetch === 'function') {
+          const originalFetch = window.fetch;
+          window.fetch = function patchedFetch(input, init) {
+            let target = input;
+            if (typeof input === 'string') target = normalise(input);
+            else if (input && typeof input.url === 'string') {
+              const fixed = normalise(input.url);
+              if (fixed !== input.url) target = new Request(fixed, input);
+            }
+            return originalFetch.call(this, target, init);
+          };
+        }
+      } catch (error) {
+        writeDiagnostic(`[login-ux] url normalisation ${String(error)}`);
+      }
+
+      // Failure-only diagnostics: the login SDK reports some rejections with a
+      // plain object, which the global handler can only render as "[object
+      // Object]". Keep the real payload in the app log so a future regression is
+      // diagnosable without rebuilding; nothing is logged on the happy path.
+      window.addEventListener('unhandledrejection', event => {
+        const reason = event.reason;
+        let detail;
+        try {
+          detail = JSON.stringify(reason, Object.getOwnPropertyNames(Object(reason)));
+        } catch {
+          detail = String(reason);
+        }
+        writeDiagnostic(`[login] rejection ${String(detail).slice(0, 600)}`);
+      });
+
+      // A transparent strip keeps the borderless dialog draggable without
+      // stealing text selection from the phone/code inputs.
       const strip = document.createElement('div');
       strip.setAttribute('data-tauri-drag-region', '');
       strip.style.cssText = 'position:fixed;left:0;top:0;right:56px;height:44px;z-index:2147483646;background:transparent;cursor:default';
@@ -131,182 +254,22 @@
       if (document.body) attachStrip();
       else document.addEventListener('DOMContentLoaded', attachStrip, { once: true });
 
-      // The login view registers "onInitSccessful" immediately before calling
-      // KrSDK.core.init(). When the SDK has already emitted that event the page
-      // never sees it, concludes "current SDK is still not ready" and leaves the
-      // dialog half-initialised (the get-code request then throws). Record every
-      // SDK event from the moment the object exists and replay it for late
-      // listeners.
+      // Hide scrollbar visuals instead of mutating `overflow`. The dialog is
+      // sized by the SDK, so changing `overflow` on its containers also changes
+      // the box metrics the SDK itself measures; a scrollbar-only rule leaves
+      // every layout dimension untouched.
       try {
-        const hookSdkEvents = () => {
-          const sdk = window.KrSDK;
-          if (!sdk || typeof sdk !== 'object' || !sdk.event || typeof sdk.event !== 'object') return false;
-          if (sdk.event.__wwtHooked) return true;
-          const fired = new Set();
-          const registrationNames = new Set(['on', 'once', 'addListener', 'removeListener', 'off']);
-          for (const key of Object.keys(sdk.event)) {
-            const original = sdk.event[key];
-            if (typeof original !== 'function') continue;
-            sdk.event[key] = function patched(...args) {
-              const type = args[0];
-              if (registrationNames.has(key)) {
-                const callback = args[1];
-                if ((key === 'on' || key === 'once' || key === 'addListener')
-                  && typeof callback === 'function'
-                  && typeof type === 'string'
-                  && fired.has(type)) {
-                  writeDiagnostic(`[login-sdk] replaying missed event ${type}`);
-                  Promise.resolve().then(() => {
-                    try {
-                      callback({ type, replayed: true });
-                    } catch (error) {
-                      writeDiagnostic(`[login-sdk] replay callback failed ${String(error)}`);
-                    }
-                  });
-                }
-                return original.apply(this, args);
-              }
-              if (typeof type === 'string') fired.add(type);
-              return original.apply(this, args);
-            };
-          }
-          sdk.event.__wwtHooked = true;
-          return true;
-        };
-        let hookAttempts = 0;
-        const hookTimer = window.setInterval(() => {
-          hookAttempts += 1;
-          if (hookSdkEvents() || hookAttempts >= 200) window.clearInterval(hookTimer);
-        }, 20);
+        const style = document.createElement('style');
+        style.setAttribute('data-wuwatappo', 'scrollbar');
+        style.textContent = [
+          '::-webkit-scrollbar{display:none!important;width:0!important;height:0!important}',
+          '::-webkit-scrollbar-thumb,::-webkit-scrollbar-track{display:none!important}',
+          'html,body{overflow:hidden!important;scrollbar-width:none}',
+        ].join('\n');
+        (document.head || document.documentElement).appendChild(style);
       } catch (error) {
-        writeDiagnostic(`[login-sdk] event recorder ${String(error)}`);
+        writeDiagnostic(`[login-ux] scrollbar ${String(error)}`);
       }
-
-      // The login page can receive the "SDK init" event while the SDK itself is
-      // still not ready (seen as "current SDK is still not ready"), which leaves
-      // the form painted but every SDK call broken. Watch for readiness and force
-      // one script reload when it stalls.
-      try {
-        let attempts = 0;
-        let reloadCount = 0;
-        const ready = () => typeof window.KrSDK === 'object' && window.KrSDK !== null && typeof window.KrSDK.core === 'object';
-        const reloadSdk = attempt => {
-          const scripts = Array.from(document.scripts).filter(node => /kr-sdk\.js/.test(String(node.src || '')));
-          const source = scripts[0]?.src;
-          scripts.forEach(node => node.remove());
-          try {
-            delete window.KrSDK;
-          } catch {
-            window.KrSDK = undefined;
-          }
-          const host = document.getElementById('KrSDK');
-          host?.remove();
-          if (!source) {
-            writeDiagnostic('[login-sdk] reload impossible: original src unknown');
-            return;
-          }
-          const script = document.createElement('script');
-          script.src = source;
-          script.crossOrigin = 'anonymous';
-          script.dataset.kuroSdkRetry = 'true';
-          script.addEventListener('load', () => writeDiagnostic('[login-sdk] reloaded script loaded'));
-          script.addEventListener('error', () => writeDiagnostic('[login-sdk] reloaded script FAILED'));
-          document.head.appendChild(script);
-          writeDiagnostic(`[login-sdk] forced reload #${attempt} of ${source.split('/').pop()}`);
-        };
-        const timer = window.setInterval(() => {
-          attempts += 1;
-          const ok = ready();
-          if (ok) {
-            window.clearInterval(timer);
-            return;
-          }
-          if (attempts === 6) writeDiagnostic('[login-sdk] sdk not ready after 3s');
-          // Retry the script until the SDK is actually usable instead of leaving
-          // the dialog in its half-initialised state.
-          if (attempts >= 8 && (attempts - 8) % 8 === 0 && reloadCount < 4) {
-            reloadCount += 1;
-            reloadSdk(reloadCount);
-          }
-          if (attempts >= 80) {
-            window.clearInterval(timer);
-            writeDiagnostic(`[login-sdk] gave up after 40s (reloads=${reloadCount})`);
-          }
-        }, 500);
-      } catch (error) {
-        writeDiagnostic(`[login-sdk] watchdog ${String(error)}`);
-      }
-
-      // The SDK is served from a CORS-enabled CDN, but the page inserts it as a
-      // plain script, which turns every thrown error into an opaque
-      // "Script error.". Marking it CORS keeps the real message available.
-      try {
-        const markSdkScript = node => {
-          if (!node || node.tagName !== 'SCRIPT') return;
-          const source = String(node.src || '');
-          if (!/kr-sdk\.js/.test(source)) return;
-          if (node.crossOrigin !== 'anonymous') {
-            node.crossOrigin = 'anonymous';
-          }
-        };
-        const watchSdkScript = node => {
-          if (!node || node.tagName !== 'SCRIPT') return;
-          if (!/kr-sdk\.js/.test(String(node.src || ''))) return;
-          node.addEventListener('error', () => writeDiagnostic('[login-patch] sdk script failed to load'));
-        };
-        const appendChild = Node.prototype.appendChild;
-        Node.prototype.appendChild = function patchedAppend(node) {
-          try {
-            markSdkScript(node);
-            watchSdkScript(node);
-          } catch {
-            /* ignore */
-          }
-          return appendChild.call(this, node);
-        };
-        const insertBefore = Node.prototype.insertBefore;
-        Node.prototype.insertBefore = function patchedInsert(node, reference) {
-          try {
-            markSdkScript(node);
-          } catch {
-            /* ignore */
-          }
-          return insertBefore.call(this, node, reference);
-        };
-      } catch (error) {
-        writeDiagnostic(`[login-patch] crossorigin ${String(error)}`);
-      }
-
-      // The login dialog keeps a fixed window size. The SDK form is absolutely
-      // positioned inside viewport-sized wrapper layers; those layers are what
-      // start scrolling (and draw a scrollbar) once the form renders. Only those
-      // full-viewport wrappers are pinned, so real lists inside the dialog (role
-      // picker, agreement text) keep their own scrolling.
-      const isViewportWrapper = element => {
-        if (element === document.documentElement || element === document.body) return true;
-        const style = window.getComputedStyle(element);
-        if (style.position !== 'fixed' && style.position !== 'absolute') return false;
-        const rect = element.getBoundingClientRect();
-        return rect.width >= window.innerWidth * 0.9 && rect.height >= window.innerHeight * 0.9;
-      };
-
-      const pin = () => {
-        const root = document.body;
-        if (!root) return;
-        const nodes = [document.documentElement, root, ...root.querySelectorAll('*')];
-        for (const node of nodes.slice(0, 1500)) {
-          if (!isViewportWrapper(node)) continue;
-          const style = window.getComputedStyle(node);
-          const scrollable = /(auto|scroll)/.test(style.overflowX) || /(auto|scroll)/.test(style.overflowY);
-          if (!scrollable) continue;
-          node.style.setProperty('overflow', 'hidden', 'important');
-        }
-      };
-
-      // A single pass after the SDK has rendered is enough for the scrollbar and
-      // keeps the dialog free of an observer that would re-scan the DOM on every
-      // SDK mutation while the login request is in flight.
-      for (const delay of [1500, 3000]) window.setTimeout(pin, delay);
     }
   } catch (error) {
     writeDiagnostic(`[login-ux] ${String(error)}`);

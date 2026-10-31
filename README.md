@@ -3,7 +3,7 @@
 [![构建](https://github.com/FleetSn0wfl4ff/wuwa-tappo-mac/actions/workflows/ci.yml/badge.svg)](https://github.com/FleetSn0wfl4ff/wuwa-tappo-mac/actions/workflows/ci.yml)
 [![下载](https://img.shields.io/github/v/release/FleetSn0wfl4ff/wuwa-tappo-mac?label=下载)](https://github.com/FleetSn0wfl4ff/wuwa-tappo-mac/releases/latest)
 
-官方 Windows 桌宠的非官方 macOS 版本。国服与国际服分别打包，当前版本 **1.0.3**。无需 Wine、Windows 或虚拟机。
+官方 Windows 桌宠的非官方 macOS 版本。国服与国际服分别打包，当前版本 **1.0.3**（mac.2）。无需 Wine、Windows 或虚拟机。
 
 ## 下载与安装
 
@@ -27,6 +27,10 @@
 更新时先退出旧版，再覆盖「应用程序」中的同名应用。应用内的检查更新会说明官方只提供 Windows 安装包，macOS 版本请从本仓库 Releases 更新。
 
 ## 版本更新
+
+### 1.0.3-mac.2（2026-10-31）
+
+- 修复国服登录在风控校验时失败：官方登录页的部分资源被解析到应用自身，滑块验证无法加载，表现为长时间转圈、提示「网络不给力」或「通行证登录暂不可用」。该问题自首个 macOS 版本起就存在，并非 1.0.3 引入。
 
 ### 1.0.3（2026-10-30）
 
