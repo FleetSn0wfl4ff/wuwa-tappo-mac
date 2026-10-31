@@ -92,14 +92,81 @@ export function findSevenZip(explicit, environment = process.env) {
   throw new Error('未找到 7-Zip。请先安装 7zip，或通过 --sevenzip /路径/7zz 指定。');
 }
 
+export function installerMirrorUrl(lock, profile, environment = process.env) {
+  const base = environment.WUWA_INSTALLER_MIRROR_BASE;
+  if (!base) return null;
+  const url = new URL(base);
+  if (url.protocol !== 'https:' || url.username || url.password || url.hash) {
+    throw new Error('安装包镜像地址必须是官方 HTTPS 资产地址。');
+  }
+  const name = new URL(lock.installer.url).pathname.split('/').at(-1);
+  // The digest prefix makes every mirrored asset immutable: a republished
+  // official installer can never resolve to an older cached copy.
+  return new URL(`${lock.installer.sha256}-${name}`, url.href.endsWith('/') ? url.href : `${url.href}/`).href;
+}
+
+// A missing mirror is a build-source problem, but a 4xx from the official host
+// means the pinned artifact is gone and must not be papered over.
+export function mirrorFallbackEligible(reason) {
+  return reason === 'network' || reason === 'server';
+}
+
+async function fetchInstallerBytes(url) {
+  let response;
+  try {
+    response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(300_000) });
+  } catch {
+    return { reason: 'network' };
+  }
+  if (!response.ok) return { reason: response.status >= 500 ? 'server' : 'client', status: response.status };
+  return { bytes: Buffer.from(await response.arrayBuffer()) };
+}
+
+// GitHub serves release assets through a signed CDN hop, so a mirror read must
+// follow exactly that redirect and nothing else.
+const MIRROR_REDIRECT = /^https:\/\/release-assets\.githubusercontent\.com\//;
+
+export function trustedMirrorRedirect(url) {
+  return MIRROR_REDIRECT.test(url);
+}
+
+async function fetchMirrorBytes(url) {
+  let response;
+  try {
+    response = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(300_000) });
+  } catch {
+    return { reason: 'network' };
+  }
+  if (!response.ok) return { reason: response.status >= 500 ? 'server' : 'client', status: response.status };
+  if (!trustedMirrorRedirect(response.url)) return { reason: 'client' };
+  return { bytes: Buffer.from(await response.arrayBuffer()) };
+}
+
 async function installerBytes(lock, options, work, profile) {
   if (options.installer) return { filename: path.resolve(options.installer), bytes: await readFile(options.installer) };
   const parts = new URL(lock.installer.url).pathname.split('/').filter(Boolean).map(encodeURIComponent);
   const filename = path.join(work, 'installers', ...parts);
   if (!options.updateLock && await exists(filename)) return { filename, bytes: await readFile(filename) };
-  const response = await fetch(lock.installer.url, { redirect: 'error', signal: AbortSignal.timeout(300_000) });
-  if (!response.ok) throw new Error(`下载 ${profile.region} 安装包失败：HTTP ${response.status}`);
-  const bytes = Buffer.from(await response.arrayBuffer());
+  const official = await fetchInstallerBytes(lock.installer.url);
+  let bytes = official.bytes;
+  if (!bytes) {
+    const mirror = mirrorFallbackEligible(official.reason)
+      ? installerMirrorUrl(lock, profile)
+      : null;
+    if (!mirror) {
+      throw new Error(
+        official.status
+          ? `下载 ${profile.region} 安装包失败：HTTP ${official.status}`
+          : `下载 ${profile.region} 安装包失败：网络不可达`,
+      );
+    }
+    console.warn(`[${profile.region}] 官方安装包不可达（${official.reason}），改用镜像：${mirror}`);
+    const mirrored = await fetchMirrorBytes(mirror);
+    if (!mirrored.bytes) throw new Error(`镜像下载 ${profile.region} 安装包失败：${mirrored.reason}`);
+    console.warn(`[${profile.region}] 镜像下载完成，按锁定摘要校验`);
+    bytes = mirrored.bytes;
+  }
+  // Both paths are verified against the pinned digest before use.
   if (lock.installer.sha256) verifyInstaller(bytes, lock, profile);
   await mkdir(path.dirname(filename), { recursive: true });
   await writeFile(`${filename}.download`, bytes);

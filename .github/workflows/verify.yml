@@ -1,0 +1,60 @@
+name: Verify release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to verify, for example v1.0.3-mac.1
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - name: Resolve tag
+        id: tag
+        env:
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: echo "name=${INPUT_TAG:-$EVENT_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Download published packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern '*.dmg' --pattern '*.zip' --dir dist
+          ls -l dist
+
+      - name: Verify packages match the tag
+        env:
+          TAG: ${{ steps.tag.outputs.name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          VERSION="${VERSION%-mac.*}"
+          shasum -a 256 dist/*.dmg dist/*.zip
+          for DMG in dist/*.dmg; do
+            echo "::group::$(basename "$DMG")"
+            MOUNT=$(mktemp -d)
+            hdiutil attach -nobrowse -readonly -mountpoint "$MOUNT" "$DMG" >/dev/null
+            APP=$(find "$MOUNT" -maxdepth 1 -name '*.app' -print -quit)
+            test -n "$APP"
+            test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = "$VERSION"
+            test "$(lipo -archs "$APP/Contents/MacOS/"*)" = arm64
+            codesign --verify --deep --strict "$APP"
+            RESOURCES=$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -exec strings -a {} + | grep -c '^/assets/')
+            test "$RESOURCES" -gt 100
+            echo "version=$VERSION arch=arm64 embedded-assets=$RESOURCES"
+            hdiutil detach "$MOUNT" >/dev/null
+            echo "::endgroup::"
+          done

@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { assetsOrigin, compareUpstream, configUrl, discoverUpstream, officialAssetUrl, parseManifest, parseOptions, syncUpstream, validateLock, verifyInstaller } from '../scripts/sync-upstream.mjs';
+import { assetsOrigin, compareUpstream, configUrl, discoverUpstream, installerMirrorUrl, mirrorFallbackEligible, trustedMirrorRedirect, officialAssetUrl, parseManifest, parseOptions, syncUpstream, validateLock, verifyInstaller } from '../scripts/sync-upstream.mjs';
 import { getRegionProfile } from '../scripts/regions.mjs';
 
 const url = `${assetsOrigin}/app/release/WuwaTappo-cn_1.0.0_x64-setup.exe`;
@@ -166,4 +166,35 @@ test('WUWA_REGION selects a separate lock while check remains read-only', async 
 test('checked-in Global resource lock remains separate from CN', async () => {
   const current = JSON.parse(await readFile(new URL('../upstream-global.json', import.meta.url), 'utf8'));
   assert.equal(validateLock(current, globalProfile).region, 'GLOBAL');
+});
+
+test('mirrored installers are addressed by their pinned digest', () => {
+  const lock = { installer: { url: 'https://example.test/app/x/WuwaTappo-cn_1.0.3_x64-setup.exe', sha256: 'b'.repeat(64) } };
+  const profile = getRegionProfile('cn');
+  assert.equal(installerMirrorUrl(lock, profile, {}), null);
+  assert.equal(
+    installerMirrorUrl(lock, profile, { WUWA_INSTALLER_MIRROR_BASE: 'https://github.com/o/r/releases/download/upstream-resources/' }),
+    `https://github.com/o/r/releases/download/upstream-resources/${'b'.repeat(64)}-WuwaTappo-cn_1.0.3_x64-setup.exe`,
+  );
+  assert.equal(
+    installerMirrorUrl(lock, profile, { WUWA_INSTALLER_MIRROR_BASE: 'https://github.com/o/r/releases/download/upstream-resources' }),
+    `https://github.com/o/r/releases/download/upstream-resources/${'b'.repeat(64)}-WuwaTappo-cn_1.0.3_x64-setup.exe`,
+  );
+  assert.throws(
+    () => installerMirrorUrl(lock, profile, { WUWA_INSTALLER_MIRROR_BASE: 'http://github.com/o/r/' }),
+    /HTTPS/,
+  );
+});
+
+test('only unreachable or failing mirrors fall back, never a rejected official artifact', () => {
+  assert.equal(mirrorFallbackEligible('network'), true);
+  assert.equal(mirrorFallbackEligible('server'), true);
+  assert.equal(mirrorFallbackEligible('client'), false);
+});
+
+test('mirror downloads accept only the GitHub release CDN hop', () => {
+  assert.equal(trustedMirrorRedirect('https://release-assets.githubusercontent.com/github-production-release-asset/1/2'), true);
+  assert.equal(trustedMirrorRedirect('https://objects.githubusercontent.com/x'), false);
+  assert.equal(trustedMirrorRedirect('https://github.com/o/r/releases/download/t/a.exe'), false);
+  assert.equal(trustedMirrorRedirect('http://release-assets.githubusercontent.com/x'), false);
 });
