@@ -30,6 +30,8 @@ jobs:
       # Mirrored official installers let the runner build when the official
       # origin is unreachable from GitHub-hosted macOS machines.
       WUWA_INSTALLER_MIRROR_BASE: https://github.com/${{ github.repository }}/releases/download/upstream-resources/
+      # The pinned identity is only present on the maintainer's machine.
+      APPLE_SIGNING_IDENTITY: '-'
       MACOSX_DEPLOYMENT_TARGET: '13.0'
       CARGO_INCREMENTAL: '0'
     steps:
