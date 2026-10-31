@@ -1,0 +1,110 @@
+name: Build macOS
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Git revision to build
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.region }}
+    runs-on: macos-15
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - region: cn
+            artifact: CN
+          - region: global
+            artifact: Global
+    env:
+      WUWA_REGION: ${{ matrix.region }}
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install build tools
+        run: |
+          test "$(uname -m)" = arm64
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup default 1.97.1
+          brew install sevenzip
+      - uses: actions/cache/restore@v4
+        id: cargo-cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: macos-arm64-${{ matrix.region }}-rust-1.97.1-${{ hashFiles('src-tauri/Cargo.lock') }}
+      - run: npm ci
+      - name: Read pinned official installer identity
+        id: installer-pin
+        run: |
+          node --input-type=module -e '
+            import { readFile } from "node:fs/promises";
+            const file = process.env.WUWA_REGION === "cn" ? "upstream-cn.json" : "upstream-global.json";
+            const lock = JSON.parse(await readFile(file, "utf8"));
+            console.log(`sha=${lock.installer.sha256}`);
+            console.log(`version=${lock.version}`);
+          ' >> "$GITHUB_OUTPUT"
+      - name: Restore the pinned official installer
+        uses: actions/cache@v4
+        with:
+          path: .work/installers
+          # Keyed on the region and the pinned digest: a new official build or a
+          # changed lock never reuses an older installer.
+          key: wuwa-installer-${{ matrix.region }}-${{ steps.installer-pin.outputs.sha }}
+      - name: Prepare verified regional resources and native build inputs
+        run: npm run setup
+      - name: Test frontend contracts and native backend
+        id: native-tests
+        run: |
+          npm test
+          npm run test:rust
+      - name: Build complete application
+        run: npm run build -- -- --locked
+      - name: Verify and package ZIP and DMG
+        run: |
+          set -o pipefail
+          npm run package 2>&1 | tee .work/package-macos.log
+      - name: Keep packaging diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-package-diagnostics-${{ matrix.region }}
+          path: .work/package-macos.log
+          if-no-files-found: ignore
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WuwaTappo-${{ matrix.artifact }}-Mac-arm64
+          path: |
+            dist/*.zip
+            dist/*.dmg
+          if-no-files-found: error
+          retention-days: 14
+      - name: Save compiled Cargo dependencies
+        if: always() && steps.native-tests.outcome == 'success' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}

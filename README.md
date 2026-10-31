@@ -1,0 +1,59 @@
+# Wuwa Tappo · macOS
+
+[![构建](https://github.com/FleetSn0wfl4ff/wuwa-tappo-mac/actions/workflows/ci.yml/badge.svg)](https://github.com/FleetSn0wfl4ff/wuwa-tappo-mac/actions/workflows/ci.yml)
+[![下载](https://img.shields.io/github/v/release/FleetSn0wfl4ff/wuwa-tappo-mac?label=下载)](https://github.com/FleetSn0wfl4ff/wuwa-tappo-mac/releases/latest)
+
+官方 Windows 桌宠的非官方 macOS 版本。国服与国际服分别打包，当前版本 **1.0.3**。无需 Wine、Windows 或虚拟机。
+
+## 下载与安装
+
+| 服务区域 | 应用 | 安装包前缀 |
+| --- | --- | --- |
+| 国服 | Wuwa Tappo CN Mac | `WuwaTappo-CN-Mac` |
+| 国际服 | Wuwa Tappo Global Mac | `WuwaTappo-Global-Mac` |
+
+1. 在 [Releases](https://github.com/FleetSn0wfl4ff/wuwa-tappo-mac/releases/latest) 中按账号所属地区下载 `.dmg`（或 `.zip`）；
+2. 将应用拖入「应用程序」；
+3. 启动应用，按提示完成权限与登录。
+
+两服可同时安装，登录状态、设置与点击计数分别保存，互不影响。需要 Apple Silicon 与 macOS 13 及以上。
+
+**首次打开需要处理三件事：**
+
+- **放行应用**：当前版本未经过 Apple 公证。若系统阻止打开，在「系统设置 → 隐私与安全性」中确认来源后选择「仍要打开」。
+- **授权输入监控**：全局键盘与鼠标计数需要「系统设置 → 隐私与安全性 → 输入监控」授权，两服需分别授权。授权后应用会自动恢复监听，无需重启。
+- **登录**：国服使用官方内嵌登录界面；国际服使用官方浏览器登录并返回应用。首次启动可选择「仅本次会话」或保存登录态。
+
+更新时先退出旧版，再覆盖「应用程序」中的同名应用。应用内的检查更新会说明官方只提供 Windows 安装包，macOS 版本请从本仓库 Releases 更新。
+
+## 版本更新
+
+### 1.0.3（2026-10-30）
+
+- 新增**全局快捷键**：游戏模式、切换屏幕、显示 / 隐藏桌宠，默认组合为 Fn+F7 / Fn+F8 / Fn+F9，可在设置中录制改键。
+- 快捷键为系统级注册，桌宠不在前台时同样生效；录制期间自动暂停，组合被占用时提示并保留原绑定。
+- 菜单栏新增**游戏模式**开关，状态与设置面板同步。
+
+### 1.0.2（2026-10-29）
+
+- 修复登录页长时间停留转圈。
+- 修复授权输入监控后桌宠仍不响应：首次启动给出一次性提示，授权后自动恢复监听，无需重启应用。
+- 修复面板与登录窗异常置顶，仅桌宠窗口保持置顶。
+- 修复登录窗无法拖动、窗口尺寸被反复放大。
+- 面板打开后记住上次位置，关闭时把焦点交还此前的应用。
+- 菜单栏显示真实监听状态，权限变化时实时更新。
+- 改用固定证书签名，后续更新不再需要重新授权输入监控。
+- 新增**手柄按键统计**：面键、十字键、肩键、扳机与摇杆按下均计入点击统计。
+
+## 已知限制
+
+- **无自动更新**：官方只提供 Windows 更新通道，请从本仓库 Releases 更新。
+- **未公证**：首次启动需在「系统设置 → 隐私与安全性」中手动放行。
+- **修饰键显示**：Command 位显示为「Win」，沿用官方格式化。
+- **手柄**：摇杆推动不计入点击统计，与原版一致。
+
+## 许可与归属
+
+代码基础与既有 macOS 原生层来自 [Last-emo-boy/wuwa-tappo-mac](https://github.com/Last-emo-boy/wuwa-tappo-mac)（MIT 许可）。本仓库基于该项目的 1.0.1 继续维护。
+
+本仓库代码按 [MIT 许可](LICENSE) 发布，`Modifications Copyright (c) 2026 FleetSn0wfl4ff`。官方界面、角色、美术、音频等资源及第三方依赖保留各自权利与许可，不因随包分发而转为 MIT 授权，详见 [第三方说明](THIRD_PARTY_NOTICES.md)。

@@ -1,0 +1,29 @@
+{
+  "name": "wuwatappo-mac",
+  "version": "1.0.3",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "extract": "node scripts/extract-assets.mjs",
+    "inventory": "node scripts/inventory-contract.mjs",
+    "icons": "node scripts/app.mjs icons",
+    "prepare:frontend": "node scripts/prepare-frontend.mjs",
+    "dev": "node scripts/app.mjs dev",
+    "build": "node scripts/app.mjs build",
+    "test": "node --test tests/*.test.mjs",
+    "test:rust": "node scripts/app.mjs test:rust",
+    "assets:sync": "node scripts/sync-upstream.mjs",
+    "upstream:check": "node scripts/sync-upstream.mjs --check",
+    "upstream:update": "node scripts/sync-upstream.mjs --update-lock",
+    "setup": "npm run assets:sync && npm run icons && npm run prepare:frontend",
+    "package": "bash scripts/package-macos.sh",
+    "setup:global": "WUWA_REGION=global npm run setup",
+    "dev:global": "WUWA_REGION=global npm run dev",
+    "build:global": "WUWA_REGION=global npm run build",
+    "package:global": "WUWA_REGION=global npm run package"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.4",
+    "acorn": "^8.15.0"
+  }
+}

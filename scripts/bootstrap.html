@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Wuwa Tappo CN Mac</title>
+<style>
+  /*FONT_FACE*/
+  :root{color-scheme:light}
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;padding:22px 24px 18px;
+    font-family:"975MaruSC","PingFang SC","Hiragino Sans GB",system-ui,sans-serif;
+    background:#fef1d9;
+    color:#8e5e43;
+    display:flex;flex-direction:column;gap:14px;
+    -webkit-user-select:none;user-select:none;
+  }
+  h1{
+    margin:0;
+    font-size:20px;font-weight:700;letter-spacing:.3px;
+    color:#59321a;text-align:center;
+  }
+  .lead{margin:-8px 0 0;font-size:12.5px;color:#a8826a;text-align:center}
+  .options{display:flex;flex-direction:column;gap:10px;margin-top:2px}
+  .option{
+    position:relative;display:block;width:100%;text-align:left;
+    font:inherit;cursor:pointer;
+    background:#fdf9ed;border:1px solid #efdcc0;border-radius:14px;
+    padding:11px 44px 11px 14px;
+    transition:border-color .15s ease,background .15s ease;
+  }
+  .option:hover:not(:disabled){border-color:#dcc0a0}
+  .option.is-selected{background:#fff4e0;border-color:#b07a54}
+  .option:disabled{cursor:default;opacity:.75}
+  .option b{display:block;font-size:13.5px;color:#59321a;margin-bottom:3px}
+  .option span{font-size:12px;line-height:1.5;color:#a8826a}
+  .option::after{
+    content:"";
+    position:absolute;right:15px;top:50%;transform:translateY(-50%);
+    font-size:14px;line-height:1;color:#995e3f;
+    opacity:0;transition:opacity .15s ease;
+  }
+  .option.is-selected::after{content:"✓";opacity:1}
+  #status{margin:0;font-size:12px;line-height:1.5;color:#a8826a;text-align:center;white-space:pre-wrap}
+  #status:empty{display:none}
+  footer{display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-top:auto}
+  #quit{
+    margin-right:auto;background:none;border:none;color:#b79a84;
+    font:inherit;font-size:12.5px;cursor:pointer;padding:7px 2px;
+  }
+  #quit:hover{color:#8e5e43}
+  #confirm{
+    font:inherit;font-size:13.5px;cursor:pointer;
+    border-radius:20px;padding:8px 26px;
+    background:#995e3f;border:1px solid #995e3f;color:#fdf9ed;
+    transition:filter .15s ease,transform .05s ease;
+  }
+  #confirm:hover:not(:disabled){filter:brightness(1.06)}
+  #confirm:active:not(:disabled){transform:translateY(1px)}
+  #confirm:disabled{opacity:.45;cursor:default}
+</style>
+<h1>Wuwa Tappo · 国服</h1>
+<p class="lead">选择登录信息的保存方式</p>
+<div class="options" role="radiogroup" aria-label="登录信息保存方式">
+  <button class="option" id="option-keychain" type="button" role="radio" aria-checked="true" data-mode="keychain">
+    <b>记住登录</b><span>凭据写入 macOS 钥匙串，下次打开应用自动登录。</span>
+  </button>
+  <button class="option" id="option-memory" type="button" role="radio" aria-checked="false" data-mode="memory">
+    <b>仅本次会话</b><span>凭据仅保存在内存，退出应用后需重新登录。</span>
+  </button>
+</div>
+<p id="status"></p>
+<footer>
+  <button id="quit" type="button">退出</button>
+  <button id="confirm" type="button">确认</button>
+</footer>
+<script>
+  const api=window.__TAURI__;
+  const status=document.getElementById('status');
+  const confirmButton=document.getElementById('confirm');
+  const options=[...document.querySelectorAll('.option')];
+  let selected='keychain';
+
+  const select=mode=>{
+    selected=mode;
+    options.forEach(option=>{
+      const active=option.dataset.mode===mode;
+      option.classList.toggle('is-selected',active);
+      option.setAttribute('aria-checked',String(active));
+    });
+  };
+  const busy=value=>{
+    options.forEach(option=>{option.disabled=value});
+    confirmButton.disabled=value;
+  };
+  const update=event=>{
+    const payload=event.payload||{};
+    if(payload.message)status.textContent=payload.message;
+    busy(!!payload.loading);
+  };
+
+  select('keychain');
+  options.forEach(option=>{option.onclick=()=>{if(!option.disabled)select(option.dataset.mode)}});
+  confirmButton.onclick=async()=>{
+    busy(true);
+    try{await api.core.invoke('start_session',{mode:selected})}
+    catch(error){status.textContent=String(error);busy(false)}
+  };
+  document.getElementById('quit').onclick=()=>api.core.invoke('exit_app');
+  document.addEventListener('keydown',event=>{
+    if(event.key==='Enter'&&!confirmButton.disabled)confirmButton.click();
+  });
+  api.event.listen('mac-startup-status',update)
+    .then(()=>api.core.invoke('get_startup_status'))
+    .then(payload=>update({payload}))
+    .catch(error=>{status.textContent=String(error)});
+</script>
+</html>

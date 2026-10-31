@@ -1,0 +1,145 @@
+name: Sync official regions
+
+on:
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-official-regions
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: ${{ matrix.region }}
+    runs-on: macos-15
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - region: cn
+            label: 国服
+          - region: global
+            label: 国际服
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    env:
+      WUWA_REGION: ${{ matrix.region }}
+      REGION_LABEL: ${{ matrix.label }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Check official regional version
+        id: upstream
+        run: |
+          mkdir -p .work
+          node scripts/sync-upstream.mjs --check > .work/upstream-check.json
+          node --input-type=module <<'NODE'
+          import { readFileSync, appendFileSync } from 'node:fs';
+          import { execFileSync } from 'node:child_process';
+          import { getRegionProfile } from './scripts/regions.mjs';
+          const profile = getRegionProfile();
+          const result = JSON.parse(readFileSync('.work/upstream-check.json', 'utf8'));
+          if (typeof result.changed !== 'boolean' || !/^\d+\.\d+\.\d+$/.test(result.latestVersion)) throw new Error('Invalid official version response');
+          const title = `同步${profile.label}官方资源 ${result.latestVersion}`;
+          const open = JSON.parse(execFileSync('gh', ['pr', 'list', '--state', 'open', '--search', `${title} in:title`, '--json', 'title'], { encoding: 'utf8' }));
+          const pending = open.some(pr => pr.title === title);
+          appendFileSync(process.env.GITHUB_OUTPUT, `changed=${result.changed && !pending}\nversion=${result.latestVersion}\nlock=${profile.upstreamLock}\n`);
+          NODE
+      - name: Install build tools
+        if: steps.upstream.outputs.changed == 'true'
+        run: |
+          test "$(uname -m)" = arm64
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup default 1.97.1
+          brew install sevenzip
+      - uses: actions/cache/restore@v4
+        id: cargo-cache
+        if: steps.upstream.outputs.changed == 'true'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: macos-arm64-${{ matrix.region }}-rust-1.97.1-${{ hashFiles('src-tauri/Cargo.lock') }}
+      - name: Validate updated official resources
+        if: steps.upstream.outputs.changed == 'true'
+        run: |
+          npm ci
+          node scripts/sync-upstream.mjs --update-lock
+          npm run icons
+          npm run prepare:frontend
+          npm test
+      - name: Test native backend
+        id: native-tests
+        if: steps.upstream.outputs.changed == 'true'
+        run: npm run test:rust
+      - name: Build native application
+        if: steps.upstream.outputs.changed == 'true'
+        run: npm run build -- -- --locked
+      - name: Package candidate
+        id: validate
+        if: steps.upstream.outputs.changed == 'true'
+        run: |
+          set -o pipefail
+          npm run package 2>&1 | tee .work/package-macos.log
+      - name: Keep validated packages for review
+        if: steps.validate.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-${{ matrix.region }}-candidate
+          path: |
+            dist/*.zip
+            dist/*.dmg
+          if-no-files-found: error
+          retention-days: 14
+      - name: Save compiled Cargo dependencies
+        if: always() && steps.native-tests.outcome == 'success' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+      - name: Open official-resource update pull request
+        if: steps.validate.outcome == 'success'
+        env:
+          VERSION: ${{ steps.upstream.outputs.version }}
+          LOCK: ${{ steps.upstream.outputs.lock }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- "$LOCK"; then exit 0; fi
+          BRANCH="codex/official-${WUWA_REGION}-${VERSION}-${GITHUB_RUN_ID}"
+          git switch -c "$BRANCH"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "$LOCK"
+          git commit -m "chore: sync official ${WUWA_REGION} resources ${VERSION}"
+          git push origin "$BRANCH"
+          gh pr create --base main --head "$BRANCH" --title "同步${REGION_LABEL}官方资源 ${VERSION}" --body "${REGION_LABEL}官方资源锁定已更新，不修改另一个地区。此工作流已通过资源完整性校验、契约测试、Rust 测试、原生构建及 ZIP/DMG 打包。请完成真人登录、输入权限和联机检查后合并，并打新的 Mac 版本标签发布。候选安装包见 Actions 的 official-${WUWA_REGION}-candidate。"
+      - name: Report incompatible or unavailable upstream
+        if: failure()
+        run: |
+          set -euo pipefail
+          TITLE="${REGION_LABEL}官方同步需要处理"
+          EXISTING=$(gh issue list --state open --search "$TITLE in:title" --json number --jq '.[0].number // empty')
+          BODY="官方同步或兼容性验证失败，未发布新版本。请查看运行日志：https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body "$BODY"
+          else
+            gh issue create --title "$TITLE" --body "$BODY"
+          fi
