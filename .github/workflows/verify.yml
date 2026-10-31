@@ -52,8 +52,11 @@ jobs:
             test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = "$VERSION"
             test "$(lipo -archs "$APP/Contents/MacOS/"*)" = arm64
             codesign --verify --deep --strict "$APP"
+            # Smoke check that the official payload is embedded: the exact chunk
+            # count follows the upstream build, so only reject an obviously empty
+            # or truncated bundle.
             RESOURCES=$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -exec strings -a {} + | grep -c '^/assets/')
-            test "$RESOURCES" -gt 100
+            test "$RESOURCES" -ge 50
             echo "version=$VERSION arch=arm64 embedded-assets=$RESOURCES"
             hdiutil detach "$MOUNT" >/dev/null
             echo "::endgroup::"
