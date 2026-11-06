@@ -275,6 +275,22 @@
     writeDiagnostic(`[login-ux] ${String(error)}`);
   }
 
+  // Vue binds Enter handlers on inputs (for example the redeem-code field) and
+  // WebKit reports the Enter that confirms a Pinyin candidate as an ordinary
+  // keydown, so committing a candidate also submits the form. Swallow only that
+  // Enter at capture time: the IME still commits, the app handler never runs.
+  try {
+    let composing = false;
+    document.addEventListener('compositionstart', () => { composing = true; }, true);
+    document.addEventListener('compositionend', () => { window.setTimeout(() => { composing = false; }, 0); }, true);
+    document.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' && event.keyCode !== 13) return;
+      if (composing || event.isComposing || event.keyCode === 229) event.stopImmediatePropagation();
+    }, true);
+  } catch (error) {
+    console.error('[macOS] IME guard unavailable', String(error));
+  }
+
   const state = { nativeInput: false };
   const productName = window.__WUWATAPPO_PROFILE__?.productName ?? 'Wuwa Tappo CN Mac';
   const isMainWindow = window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label === 'main';
@@ -294,33 +310,89 @@
     let attemptedRecovery = false;
     let checking = false;
     let previousStatus;
+    // The notice is dismissible for good: the pet's overlay is click-through
+    // everywhere else, so the notice registers its own screen rectangle with the
+    // native window and stops being re-shown once the user closes it. The menu
+    // bar's "启用键鼠监听" item stays as the recovery path.
+    const NOTICE_DISMISSED_KEY = 'wuwatappo.input-notice-dismissed';
+    let noticeRegion = null;
+    const noticeDismissed = () => {
+      try { return window.localStorage.getItem(NOTICE_DISMISSED_KEY) === '1'; } catch { return false; }
+    };
+    const clearNoticeRegion = () => {
+      if (noticeRegion === null) return;
+      noticeRegion = null;
+      api.core.invoke('set_notice_region', { region: null }).catch(() => {});
+    };
+    const sameNoticeRegion = next => noticeRegion !== null
+      && noticeRegion.left === next.left && noticeRegion.top === next.top
+      && noticeRegion.width === next.width && noticeRegion.height === next.height;
+    const reportNoticeRegion = element => {
+      let rect;
+      try { rect = element.getBoundingClientRect(); } catch { return; }
+      if (!rect || !(rect.width > 0) || !(rect.height > 0)) return;
+      const next = { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+      if (sameNoticeRegion(next)) return;
+      noticeRegion = next;
+      api.core.invoke('set_notice_region', { region: next }).catch(() => {});
+    };
+    const removeNotice = () => {
+      clearNoticeRegion();
+      const notice = document.getElementById('wuwatappo-input-status');
+      if (!notice) return;
+      window.clearTimeout(notice.__hideTimer);
+      notice.remove();
+    };
+    const dismissNotice = () => {
+      try { window.localStorage.setItem(NOTICE_DISMISSED_KEY, '1'); } catch {}
+      removeNotice();
+      api.core.invoke('write_app_log', { level: 'info', message: '[INPUT] status notice dismissed permanently' })
+        .catch(() => console.error('[macOS] Could not record the dismissed input notice'));
+    };
+    const showNotice = message => {
+      let notice = document.getElementById('wuwatappo-input-status');
+      if (!notice) {
+        notice = document.createElement('div');
+        notice.id = 'wuwatappo-input-status';
+        notice.setAttribute('role', 'status');
+        notice.style.cssText = 'position:fixed;z-index:2147483647;left:16px;top:52px;max-width:460px;padding:12px 16px;border-radius:10px;background:#fff2df;color:#59321a;font:14px/1.5 system-ui;box-shadow:0 2px 16px #0002;pointer-events:none;opacity:0;transition:opacity .25s;display:flex;align-items:flex-start;gap:10px';
+        const text = document.createElement('span');
+        text.className = 'wuwatappo-input-status-text';
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'wuwatappo-input-status-close';
+        close.setAttribute('aria-label', '关闭提示');
+        close.textContent = '×';
+        close.style.cssText = 'pointer-events:auto;flex:0 0 auto;margin:-4px -6px 0 0;padding:0 4px;border:0;background:transparent;color:#59321a;font:18px/1 system-ui;cursor:pointer';
+        close.addEventListener('click', event => {
+          event.preventDefault();
+          event.stopPropagation();
+          dismissNotice();
+        });
+        notice.append(text, close);
+        (document.body || document.documentElement).append(notice);
+      }
+      const text = notice.querySelector('.wuwatappo-input-status-text');
+      if (text) text.textContent = message;
+      notice.style.opacity = '1';
+      window.clearTimeout(notice.__hideTimer);
+      reportNoticeRegion(notice);
+      notice.__hideTimer = window.setTimeout(() => {
+        if (!notice) return;
+        notice.style.opacity = '0';
+        clearNoticeRegion();
+      }, 25000);
+    };
     const update = status => {
       state.nativeInput = status?.running === true;
       if (!isMainWindow) return;
       if (status?.granted === false || status?.running) attemptedRecovery = false;
-      let warning = document.getElementById('wuwatappo-input-status');
-      if (status?.running) warning?.remove();
-      else {
-        if (!warning) {
-          warning = document.createElement('div');
-          warning.id = 'wuwatappo-input-status';
-          warning.setAttribute('role', 'status');
-          // The overlay window is click-through outside the pet, so this notice
-          // is informational only: it fades out and never claims to be clickable.
-          warning.style.cssText = 'position:fixed;z-index:2147483647;left:16px;top:52px;max-width:460px;padding:12px 16px;border-radius:10px;background:#fff2df;color:#59321a;font:14px/1.5 system-ui;box-shadow:0 2px 16px #0002;pointer-events:none;opacity:0;transition:opacity .25s';
-          (document.body || document.documentElement).append(warning);
-        }
-        warning.textContent = status?.error === 'input_status_unavailable'
-          ? `无法读取 ${productName} 的键鼠监听状态。请从菜单栏图标的「启用键鼠监听」重试。`
-          : !status?.granted
-            ? `键鼠计数已暂停：请在「系统设置 → 隐私与安全性 → 输入监控」中允许 ${productName}，然后通过菜单栏图标退出并重新打开本应用。`
-            : '已获得输入监控权限，但监听尚未启动。请从菜单栏图标的「启用键鼠监听」重试。';
-        warning.style.opacity = '1';
-        window.clearTimeout(warning.__hideTimer);
-        warning.__hideTimer = window.setTimeout(() => {
-          if (warning) warning.style.opacity = '0';
-        }, 25000);
-      }
+      if (status?.running || noticeDismissed()) removeNotice();
+      else showNotice(status?.error === 'input_status_unavailable'
+        ? `无法读取 ${productName} 的键鼠监听状态。请从菜单栏图标的「启用键鼠监听」重试。`
+        : !status?.granted
+          ? `键鼠计数已暂停：请在「系统设置 → 隐私与安全性 → 输入监控」中允许 ${productName}，然后通过菜单栏图标的「启用键鼠监听」重试。`
+          : '已获得输入监控权限，但监听尚未启动。请从菜单栏图标的「启用键鼠监听」重试。');
       const signature = JSON.stringify([status?.granted ?? null, status?.running ?? null, status?.error ?? null]);
       if (signature !== previousStatus) {
         previousStatus = signature;

@@ -22,9 +22,11 @@ function webview({ profile, readyState = 'loading', label = 'main', rejectLog = 
       return rejectLog ? Promise.reject(new Error('synthetic-log-secret')) : Promise.resolve();
     }
     if (command === 'resume_input_monitor') return Promise.resolve(resumeStatus ?? currentStatus);
+    if (command === 'set_notice_region') return Promise.resolve();
     assert.equal(command, 'get_input_status');
     return rejectStatus ? Promise.reject(new Error('unavailable')) : Promise.resolve(currentStatus);
   }
+  const storage = new Map();
   const window = {
     addEventListener(type, callback) { events.set(type, callback); },
     setTimeout(callback) { return 1; },
@@ -32,6 +34,10 @@ function webview({ profile, readyState = 'loading', label = 'main', rejectLog = 
     setInterval(callback, milliseconds) { assert.equal(milliseconds, 2000); interval = callback; return 1; },
     clearInterval(id) { assert.equal(id, 1); interval = undefined; },
     __WUWATAPPO_PROFILE__: profile,
+    localStorage: {
+      getItem(key) { return storage.has(key) ? storage.get(key) : null; },
+      setItem(key, value) { storage.set(key, String(value)); },
+    },
     __TAURI_INTERNALS__: { metadata: { currentWindow: { label } }, invoke },
     __TAURI__: {
       core: { invoke },
@@ -48,7 +54,18 @@ function webview({ profile, readyState = 'loading', label = 'main', rejectLog = 
     readyState,
     addEventListener(type, callback) { documentEvents.set(type, callback); },
     getElementById(id) { return nodes.get(id); },
-    createElement() { return { style: {}, setAttribute() {}, remove() { nodes.delete(this.id); } }; },
+    createElement(tag) {
+      const node = {
+        tagName: tag, style: {}, children: [], handlers: {}, textContent: '', className: '',
+        setAttribute() {},
+        append(...children) { node.children.push(...children); },
+        addEventListener(type, callback) { node.handlers[type] = callback; },
+        querySelector(selector) { return node.children.find(child => child.className === selector.replace(/^\./, '')) ?? null; },
+        getBoundingClientRect() { return { left: 16, top: 52, width: 460, height: 44 }; },
+        remove() { nodes.delete(node.id); },
+      };
+      return node;
+    },
     body: { append(node) { nodes.set(node.id, node); } },
   };
   vm.runInNewContext(script, { window, document, Error, TypeError, console: { error: (...args) => errors.push(args), warn: (...args) => errors.push(args) } });
@@ -58,7 +75,16 @@ function webview({ profile, readyState = 'loading', label = 'main', rejectLog = 
     updateInput(running) { inputListener({ payload: { running } }); },
     setStatus(value) { currentStatus = value; },
     tick() { return interval?.(); },
-    warning() { return nodes.get('wuwatappo-input-status')?.textContent; },
+    warning() { return nodes.get('wuwatappo-input-status')?.querySelector('.wuwatappo-input-status-text')?.textContent; },
+    notice() { return nodes.get('wuwatappo-input-status'); },
+    dismissed() { return storage.get('wuwatappo.input-notice-dismissed'); },
+    noticeRegions() { return calls.filter(call => call.command === 'set_notice_region').map(call => call.payload.region); },
+    closeNotice() {
+      const notice = nodes.get('wuwatappo-input-status');
+      notice.handlers.click ? notice.handlers.click() : notice.children.find(child => child.className === 'wuwatappo-input-status-close').handlers.click({
+        preventDefault() {}, stopPropagation() {},
+      });
+    },
     logs() { return calls.filter(call => call.command === 'write_app_log' && call.payload.message.startsWith('[webview')).map(call => call.payload.message); },
   };
 }
@@ -163,6 +189,19 @@ test('native input suppression still follows trusted main-window status', async 
   assert.equal(webview({ label: 'panel' }).documentEvents.has('mousedown'), false);
 });
 
+test('an Enter that only commits an IME candidate never reaches the app shortcut', () => {
+  const view = webview({ readyState: 'complete' });
+  const keydown = view.documentEvents.get('keydown');
+  assert.equal(typeof keydown, 'function', 'the capture-phase keyboard guard must be installed');
+  const probe = (event) => { let stopped = false; keydown({ ...event, stopImmediatePropagation() { stopped = true; } }); return stopped; };
+  assert.equal(probe({ key: 'Enter', keyCode: 13 }), false, 'a plain Enter still submits');
+  assert.equal(probe({ key: 'Enter', keyCode: 229 }), true, 'the IME confirm key is swallowed');
+  assert.equal(probe({ key: 'Enter', keyCode: 13, isComposing: true }), true, 'composing Enter is swallowed');
+  view.documentEvents.get('compositionstart')({});
+  assert.equal(probe({ key: 'Enter', keyCode: 13 }), true, 'Enter during a composition session is swallowed');
+  assert.equal(probe({ key: 'a', keyCode: 65 }), false, 'other keys are untouched');
+});
+
 test('granting input access resumes once and removes the paused warning', async () => {
   const view = webview({ readyState: 'complete', resumeStatus: { granted: true, running: true, error: null } });
   await drain();
@@ -192,6 +231,43 @@ test('a failed input recovery stays visible without repeatedly rebuilding the ta
   view.setStatus(status);
   await view.tick();
   assert.equal(view.calls.filter(call => call.command === 'resume_input_monitor').length, 2);
+});
+
+test('the input notice registers a clickable rectangle and dismisses for good', async () => {
+  const view = webview({ readyState: 'complete' });
+  await drain();
+  assert.match(view.warning(), /输入监控/);
+  const region = view.noticeRegions().at(-1);
+  assert.deepEqual([region.left, region.top, region.width, region.height], [16, 52, 460, 44]);
+  view.closeNotice();
+  assert.equal(view.notice(), undefined);
+  assert.equal(view.dismissed(), '1');
+  assert.equal(view.noticeRegions().at(-1), null, 'closing the notice releases its screen rectangle');
+  await view.tick();
+  await view.tick();
+  assert.equal(view.warning(), undefined, 'the 2s permission poll must not resurrect a dismissed notice');
+});
+
+test('a dismissed notice stays hidden across restarts and permission changes', async () => {
+  const view = webview({ readyState: 'complete' });
+  await drain();
+  view.closeNotice();
+  await view.tick();
+  view.setStatus({ granted: false, running: false, error: 'input_monitoring_permission_revoked' });
+  await view.tick();
+  assert.equal(view.warning(), undefined);
+  assert.equal(view.calls.filter(call => call.command === 'set_notice_region').at(-1).payload.region, null);
+});
+
+test('granting access after the notice closed does not re-open it', async () => {
+  const view = webview({ readyState: 'complete' });
+  await drain();
+  view.closeNotice();
+  view.setStatus({ granted: true, running: true, error: null });
+  await view.tick();
+  view.setStatus({ granted: false, running: false, error: 'input_monitoring_permission_required' });
+  await view.tick();
+  assert.equal(view.warning(), undefined);
 });
 
 test('unreadable input status is not reported as granted or running', async () => {

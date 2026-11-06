@@ -47,6 +47,7 @@ pub const COMMANDS: &[&str] = &[
     "resize_login_window_to_content",
     "set_main_force_cursor_ignore",
     "set_main_hit_region",
+    "set_notice_region",
     "set_main_skip_taskbar",
     "set_main_swallow_mouse",
     "set_main_window_content_bounds",
@@ -95,9 +96,31 @@ struct MainGeometry {
 struct HitState {
     regions: Vec<HitRegion>,
     input_regions: Vec<HitRegion>,
+    /// Screen area of a transient native notice (the input-monitoring banner).
+    /// The pet ignores the cursor everywhere else, so a notice that must be
+    /// clickable has to be registered here or it would be unreachable.
+    notice: Option<HitRegion>,
     window_passthrough: bool,
     force_ignore: bool,
     swallow: bool,
+}
+
+fn ignores_cursor(hit: &HitState, x: f64, y: f64) -> bool {
+    if hit.swallow {
+        return false;
+    }
+    if hit.force_ignore {
+        return true;
+    }
+    if hit.notice.as_ref().is_some_and(|region| region.contains(x, y)) {
+        return false;
+    }
+    let regions = if hit.window_passthrough {
+        &hit.input_regions
+    } else {
+        &hit.regions
+    };
+    !regions.iter().any(|region| region.contains(x, y))
 }
 
 #[derive(Deserialize)]
@@ -740,6 +763,19 @@ pub fn dispatch(
             hit.window_passthrough = update.window_passthrough;
             hit.force_ignore = false;
         }
+        "set_notice_region" => {
+            let mut hit = state.hit.write().map_err(err)?;
+            hit.notice = match payload(args).get("region").cloned().unwrap_or(Value::Null) {
+                Value::Null => None,
+                value => {
+                    let region: HitRegion = serde_json::from_value(value).map_err(err)?;
+                    if !region.is_valid() {
+                        return Err("Invalid notice region geometry".into());
+                    }
+                    Some(region)
+                }
+            };
+        }
         "set_main_force_cursor_ignore" => {
             state.hit.write().map_err(err)?.force_ignore = args
                 .get("enabled")
@@ -1061,18 +1097,7 @@ pub fn setup(app: &AppHandle) -> Result<(), String> {
                         let y = cursor.y / primary_scale - origin.y as f64 / scale;
                         let state = app.state::<WindowState>();
                         let h = state.hit.read().map_err(err)?;
-                        let ignored = if h.swallow {
-                            false
-                        } else if h.force_ignore {
-                            true
-                        } else {
-                            let regions = if h.window_passthrough {
-                                &h.input_regions
-                            } else {
-                                &h.regions
-                            };
-                            !regions.iter().any(|r| r.contains(x, y))
-                        };
+                        let ignored = ignores_cursor(&h, x, y);
                         drop(h);
                         if previous != Some(ignored) {
                             w.set_ignore_cursor_events(ignored).map_err(err)?;
@@ -1092,4 +1117,53 @@ pub fn setup(app: &AppHandle) -> Result<(), String> {
         }
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn region(left: f64, top: f64, width: f64, height: f64) -> HitRegion {
+        HitRegion { left, top, width, height, member_id: None }
+    }
+
+    #[test]
+    fn notice_region_receives_clicks_outside_the_pet() {
+        let mut hit = HitState::default();
+        hit.regions = vec![region(500., 500., 100., 100.)];
+        assert!(ignores_cursor(&hit, 20., 60.), "the banner area must start click-through");
+        hit.notice = Some(region(16., 52., 460., 44.));
+        assert!(!ignores_cursor(&hit, 20., 60.), "the notice rectangle must accept the click");
+        assert!(ignores_cursor(&hit, 20., 200.), "the rest of the overlay stays click-through");
+    }
+
+    #[test]
+    fn clearing_the_notice_returns_it_to_click_through() {
+        let mut hit = HitState::default();
+        hit.notice = Some(region(16., 52., 460., 44.));
+        assert!(!ignores_cursor(&hit, 20., 60.));
+        hit.notice = None;
+        assert!(ignores_cursor(&hit, 20., 60.));
+    }
+
+    #[test]
+    fn window_passthrough_still_lets_the_notice_be_dismissed() {
+        let mut hit = HitState::default();
+        hit.window_passthrough = true;
+        hit.notice = Some(region(16., 52., 460., 44.));
+        assert!(!ignores_cursor(&hit, 20., 60.), "the close button must remain reachable");
+    }
+
+    #[test]
+    fn forced_ignore_and_swallow_take_precedence_over_the_notice() {
+        let mut hit = HitState {
+            notice: Some(region(16., 52., 460., 44.)),
+            ..HitState::default()
+        };
+        hit.force_ignore = true;
+        assert!(ignores_cursor(&hit, 20., 60.));
+        hit.force_ignore = false;
+        hit.swallow = true;
+        assert!(!ignores_cursor(&hit, 20., 60.));
+    }
 }
