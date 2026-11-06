@@ -929,8 +929,32 @@ pub fn dispatch(
 /// Ask once per launch while the permission is missing. A user who declines is
 /// not interrupted again during the same run; the in-window notice and the menu
 /// item remain as reminders.
-fn ask_input_access_once(_app: &AppHandle) -> bool {
-    true
+fn ask_input_access_once(app: &AppHandle) -> bool {
+    let Ok(dir) = app.path().app_data_dir() else { return true };
+    mark_input_access_asked(&dir.join("input-permission-asked"))
+}
+
+/// The system only shows its Input Monitoring alert once per app identity, but
+/// calling `CGRequestListenEventAccess` again re-opens it. Persist the marker so
+/// a launch never re-asks: after the first attempt the menu item and the notice
+/// button (which opens the exact Settings pane) are the only recovery paths.
+fn mark_input_access_asked(marker: &std::path::Path) -> bool {
+    if marker.exists() {
+        return false;
+    }
+    if let Some(parent) = marker.parent() {
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            eprintln!("Could not create the input access marker directory: {error}");
+            return true;
+        }
+    }
+    match std::fs::write(marker, b"1") {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!("Could not record the input access request: {error}");
+            true
+        }
+    }
 }
 
 pub fn setup(app: &AppHandle) -> Result<(), String> {
@@ -1125,6 +1149,17 @@ mod tests {
 
     fn region(left: f64, top: f64, width: f64, height: f64) -> HitRegion {
         HitRegion { left, top, width, height, member_id: None }
+    }
+
+    #[test]
+    fn input_access_is_requested_once_per_install() {
+        let dir = std::env::temp_dir().join(format!("wuwa-asked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let marker = dir.join("input-permission-asked");
+        assert!(mark_input_access_asked(&marker), "the first launch asks the system");
+        assert!(marker.exists());
+        assert!(!mark_input_access_asked(&marker), "later launches stay quiet");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

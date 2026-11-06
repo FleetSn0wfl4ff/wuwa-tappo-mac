@@ -358,6 +358,16 @@
         notice.style.cssText = 'position:fixed;z-index:2147483647;left:16px;top:52px;max-width:460px;padding:12px 16px;border-radius:10px;background:#fff2df;color:#59321a;font:14px/1.5 system-ui;box-shadow:0 2px 16px #0002;pointer-events:none;opacity:0;transition:opacity .25s;display:flex;align-items:flex-start;gap:10px';
         const text = document.createElement('span');
         text.className = 'wuwatappo-input-status-text';
+        const grant = document.createElement('button');
+        grant.type = 'button';
+        grant.className = 'wuwatappo-input-status-grant';
+        grant.textContent = '去授权';
+        grant.style.cssText = 'pointer-events:auto;flex:0 0 auto;margin:-2px 0 0 0;padding:3px 10px;border:1px solid #c88865;border-radius:8px;background:#fff7e8;color:#59321a;font:13px/1.4 system-ui;cursor:pointer';
+        grant.addEventListener('click', event => {
+          event.preventDefault();
+          event.stopPropagation();
+          api.core.invoke('open_input_monitoring_settings').catch(() => {});
+        });
         const close = document.createElement('button');
         close.type = 'button';
         close.className = 'wuwatappo-input-status-close';
@@ -369,7 +379,7 @@
           event.stopPropagation();
           dismissNotice();
         });
-        notice.append(text, close);
+        notice.append(text, grant, close);
         (document.body || document.documentElement).append(notice);
       }
       const text = notice.querySelector('.wuwatappo-input-status-text');

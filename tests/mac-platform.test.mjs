@@ -23,6 +23,7 @@ function webview({ profile, readyState = 'loading', label = 'main', rejectLog = 
     }
     if (command === 'resume_input_monitor') return Promise.resolve(resumeStatus ?? currentStatus);
     if (command === 'set_notice_region') return Promise.resolve();
+    if (command === 'open_input_monitoring_settings') return Promise.resolve();
     assert.equal(command, 'get_input_status');
     return rejectStatus ? Promise.reject(new Error('unavailable')) : Promise.resolve(currentStatus);
   }
@@ -84,6 +85,11 @@ function webview({ profile, readyState = 'loading', label = 'main', rejectLog = 
       notice.handlers.click ? notice.handlers.click() : notice.children.find(child => child.className === 'wuwatappo-input-status-close').handlers.click({
         preventDefault() {}, stopPropagation() {},
       });
+    },
+    openSettingsFromNotice() {
+      const grant = nodes.get('wuwatappo-input-status').children.find(child => child.className === 'wuwatappo-input-status-grant');
+      grant.handlers.click({ preventDefault() {}, stopPropagation() {} });
+      return calls.filter(call => call.command === 'open_input_monitoring_settings').length;
     },
     logs() { return calls.filter(call => call.command === 'write_app_log' && call.payload.message.startsWith('[webview')).map(call => call.payload.message); },
   };
@@ -246,6 +252,14 @@ test('the input notice registers a clickable rectangle and dismisses for good', 
   await view.tick();
   await view.tick();
   assert.equal(view.warning(), undefined, 'the 2s permission poll must not resurrect a dismissed notice');
+});
+
+test('the notice can open the Input Monitoring pane in one click', async () => {
+  const view = webview({ readyState: 'complete' });
+  await drain();
+  assert.match(view.warning(), /输入监控/);
+  assert.equal(view.openSettingsFromNotice(), 1);
+  assert.match(view.warning(), /输入监控/, 'opening Settings keeps the notice until it is fixed or closed');
 });
 
 test('a dismissed notice stays hidden across restarts and permission changes', async () => {
