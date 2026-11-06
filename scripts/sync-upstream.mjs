@@ -207,7 +207,15 @@ export async function syncUpstream(options = {}, projectRoot = root) {
     try { await rename(output, frontend); }
     catch (error) { if (hadFrontend) await rename(backup, frontend); throw error; }
     if (options.updateLock) await writeFile(lockPath, `${JSON.stringify(target, null, 2)}\n`);
-    await writeFile(path.join(work, profile.id === 'cn' ? 'upstream-extraction.json' : `upstream-${profile.id}-extraction.json`), result.stdout);
+    // Store the staging path relative to the project: the extraction record is a
+    // build artifact, and an absolute path here would record the builder's home
+    // directory (the macOS build strips the same leak from compiled binaries).
+    const extractedRecord = JSON.parse(result.stdout);
+    extractedRecord.output = path.relative(projectRoot, extractedRecord.output);
+    await writeFile(
+      path.join(work, profile.id === 'cn' ? 'upstream-extraction.json' : `upstream-${profile.id}-extraction.json`),
+      `${JSON.stringify(extractedRecord, null, 2)}\n`,
+    );
     return { ...comparison, version: target.version, region: target.region, files: extracted.count, staticReferences: extracted.staticReferences };
   } finally { await rm(staging, { recursive: true, force: true }); }
 }

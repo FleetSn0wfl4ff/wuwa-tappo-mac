@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getRegionProfile } from './regions.mjs';
@@ -11,6 +12,18 @@ export function tauriArguments(action, profile, extra = []) {
   if (!['dev', 'build'].includes(action)) throw new Error(`未知构建操作：${action}`);
   return [action, ...(action === 'build' ? ['--bundles', 'app'] : []),
     ...(profile.tauriConfig ? ['--config', profile.tauriConfig] : []), ...extra];
+}
+
+// Rust dependencies embed their source paths (panic locations) as plain string
+// literals. A local build would ship the builder's home directory inside the
+// app, which leaks the account name into every published binary. Remap the home
+// prefix so both local and CI builds carry a neutral `/build/...` path.
+export function reproducibleRustFlags(environment = process.env, home = homedir()) {
+  const remap = `--remap-path-prefix=${home}=/build`;
+  const existing = environment.RUSTFLAGS?.trim();
+  return existing && !existing.includes('--remap-path-prefix')
+    ? `${existing} ${remap}`
+    : existing ?? remap;
 }
 
 function run(command, args, environment = process.env) {
@@ -32,7 +45,10 @@ async function main([action, ...extra]) {
     run(process.execPath, [cli, ...tauriArguments('icons', profile)]);
     run(process.execPath, [path.join(root, 'scripts/prepare-frontend.mjs')]);
   }
-  run(process.execPath, [cli, ...tauriArguments(action, profile, extra)]);
+  run(process.execPath, [cli, ...tauriArguments(action, profile, extra)], {
+    ...process.env,
+    RUSTFLAGS: reproducibleRustFlags(),
+  });
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

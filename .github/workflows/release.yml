@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing version tag, for example v1.0.1-mac.1
+        description: Existing version tag, for example v1.0.4-mac.1
         required: true
         type: string
 
@@ -18,6 +18,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Kept as a check on the tagged commit: the packages that get published are
+  # the locally built, certificate-signed ones, never these ad-hoc CI artifacts.
   build:
     uses: ./.github/workflows/build.yml
     with:
@@ -28,12 +30,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v5
         with:
-          pattern: WuwaTappo-*-Mac-arm64
-          merge-multiple: true
-          path: dist
-      - name: Publish complete CN and Global Mac packages
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          sparse-checkout: README.md
+          persist-credentials: false
+      - name: Verify the release carries the locally signed packages
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -42,13 +44,44 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-mac\.[0-9]+$ ]]
+          VERSION="${TAG#v}"
+          VERSION="${VERSION%-mac.*}"
+
+          # Locally built packages are signed with the pinned certificate, so an
+          # update keeps the Input Monitoring grant. CI builds are ad-hoc signed
+          # and would reset that grant, therefore this workflow never creates a
+          # release nor uploads an artifact: it only checks the release that was
+          # prepared by hand from dist/.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            printf 'Release %s does not exist yet.\nCreate it first from the locally built packages, then re-run this workflow:\n' "$TAG" >&2
+            printf '  gh release create %s dist/*.dmg dist/*.zip --title "Wuwa Tappo Mac 国服 / 国际服 %s" --notes-file /tmp/release-notes.md --latest\n' "$TAG" "$TAG" >&2
+            exit 1
+          fi
+
+          EXISTING=$(gh release view "$TAG" --json assets --jq '.assets[].name')
+          MISSING=""
           for REGION in CN Global; do
-            for EXT in zip dmg; do
-              PACKAGES=(dist/WuwaTappo-"$REGION"-Mac-*-arm64."$EXT")
-              [[ ${#PACKAGES[@]} -eq 1 && -f "${PACKAGES[0]}" ]]
+            for EXT in dmg zip; do
+              NAME="WuwaTappo-$REGION-Mac-$VERSION-arm64.$EXT"
+              printf '%s\n' "$EXISTING" | grep -qxF "$NAME" || MISSING="$MISSING $NAME"
             done
           done
-          cat > /tmp/release-notes.md <<'NOTES'
+          if [ -n "$MISSING" ]; then
+            printf 'Release %s is missing:%s\nUpload the locally built packages; CI artifacts are never published.\n' "$TAG" "$MISSING" >&2
+            exit 1
+          fi
+          printf 'Release %s carries all four locally signed packages.\n' "$TAG"
+
+          # The user-facing notes have a single source: README.md -> 版本更新.
+          {
+            awk -v version="$VERSION" '
+              /^## 版本更新$/ { inside = 1; next }
+              inside && /^## / { exit }
+              inside && /^### / { if (started) exit; if (index($0, "### " version) == 1) started = 1 }
+              inside && started { print }
+            ' README.md
+            printf '\n---\n\n'
+            cat <<'NOTES'
           ## Wuwa Tappo · macOS 非官方重建版（国服 / 国际服）
 
           国服下载名称含 `CN` 的文件，国际服下载名称含 `Global` 的文件；两服应用、账号缓存和点击记录相互独立，可同时安装。
@@ -61,25 +94,8 @@ jobs:
           - 包内不包含任何人的账号、登录凭据、点击记录或系统缓存。
           - 本项目由社区维护，不是库洛官方 Mac 客户端。随包的官方资源归原权利人所有；官方规则、账号和资产仍由官方服务决定。
 
-          每服 ZIP 与 DMG 内容相同，共四个安装文件。只有两服自动化测试、原生构建和完整打包都成功后才发布；真人登录、系统权限及双人联机仍需实际验证。
+          每服 ZIP 与 DMG 内容相同，共四个安装文件。安装包由维护者用固定证书在本地构建并签名，覆盖安装后无需重新授权输入监控；真人登录、系统权限及双人联机仍需实际验证。
           NOTES
-          # Published artifacts are built and signed locally; never replace them.
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            EXISTING=$(gh release view "$TAG" --json assets --jq '.assets[].name')
-            MISSING=""
-            for FILE in dist/*.zip dist/*.dmg; do
-              NAME=$(basename "$FILE")
-              if ! printf '%s\n' "$EXISTING" | grep -qxF "$NAME"; then
-                MISSING="$MISSING $FILE"
-              fi
-            done
-            if [ -z "$MISSING" ]; then
-              printf 'Release %s already carries all four packages; keeping the published builds.\n' "$TAG"
-            else
-              printf 'Uploading missing packages:%s\n' "$MISSING"
-              # shellcheck disable=SC2086
-              gh release upload "$TAG" $MISSING
-            fi
-          else
-            gh release create "$TAG" dist/*.zip dist/*.dmg --verify-tag --title "Wuwa Tappo Mac 国服 / 国际服 $TAG" --notes-file /tmp/release-notes.md --latest
-          fi
+          } > /tmp/release-notes.md
+
+          gh release edit "$TAG" --notes-file /tmp/release-notes.md

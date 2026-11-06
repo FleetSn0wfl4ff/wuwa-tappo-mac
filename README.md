@@ -3,7 +3,7 @@
 [![构建](https://github.com/FleetSn0wfl4ff/wuwa-tappo-mac/actions/workflows/ci.yml/badge.svg)](https://github.com/FleetSn0wfl4ff/wuwa-tappo-mac/actions/workflows/ci.yml)
 [![下载](https://img.shields.io/github/v/release/FleetSn0wfl4ff/wuwa-tappo-mac?label=下载)](https://github.com/FleetSn0wfl4ff/wuwa-tappo-mac/releases/latest)
 
-官方 Windows 桌宠的非官方 macOS 版本。国服与国际服分别打包，当前版本 **1.0.3**（mac.2）。无需 Wine、Windows 或虚拟机。
+官方 Windows 桌宠的非官方 macOS 版本。国服与国际服分别打包，当前版本 **1.0.4**（mac.1）。无需 Wine、Windows 或虚拟机。
 
 ## 下载与安装
 
@@ -27,6 +27,12 @@
 更新时先退出旧版，再覆盖「应用程序」中的同名应用。应用内的检查更新会说明官方只提供 Windows 安装包，macOS 版本请从本仓库 Releases 更新。
 
 ## 版本更新
+
+### 1.0.4（2026-11-05）
+
+- 跟随官方 1.0.4：新增**联机房间内一键屏蔽其他玩家桌宠**，开关只影响本机显示，不改变房间状态与自己的点击统计。
+- 优化登录弹窗：角色选择弹窗高度与内边距调整，角色下拉改为向上展开，不再被窗口边缘截断。
+- 顺带修复：登录玩家查询改为携带令牌与昵称的四参数请求；更新提示文案改为跟随界面语言，不再固定中文。
 
 ### 1.0.3-mac.2（2026-10-31）
 
