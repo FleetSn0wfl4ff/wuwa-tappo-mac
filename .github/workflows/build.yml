@@ -15,7 +15,7 @@ permissions:
 jobs:
   build:
     name: ${{ matrix.region }}
-    runs-on: macos-15
+    runs-on: macos-latest
     timeout-minutes: 45
     strategy:
       fail-fast: false
