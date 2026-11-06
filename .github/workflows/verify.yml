@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   verify:
-    runs-on: macos-15
+    runs-on: macos-latest
     timeout-minutes: 15
     steps:
       - name: Resolve tag
