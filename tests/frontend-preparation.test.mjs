@@ -63,7 +63,7 @@ test('prepared resources preserve the selected region and contain its macOS adap
     assert.ok(preparedMain.indexOf(listener) < preparedMain.indexOf(current));
   } else {
     assert.ok(preparedMain.includes('isdkSrc="https://pro-cdn-sdk.kurogame.com/pro/web-sdk/1.x/kr-sdk.js"'));
-    const login = findSource(source => source.includes('async function we(e=!1)'));
+    const login = findSource(source => source.includes('.dataset.kuroSdkRetry="true"'));
     const preparedLogin = await readFile(path.join(root, profile.preparedDir, 'assets', login.name), 'utf8');
     assert.ok(preparedLogin.includes('document.getElementById("KrSDK")?.remove()'));
     parse(preparedLogin, { sourceType: 'module', ecmaVersion: 'latest' });

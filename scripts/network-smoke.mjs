@@ -51,8 +51,18 @@ export async function verifySourceContract(assetDirectory = path.join(root, prof
       assert.ok(login.includes(value), `Missing domestic login marker: ${value}`);
     }
     assert.ok(!login.includes('plugin:deep-link|'), 'Domestic login unexpectedly requires a native OAuth callback');
-    assert.ok(/\b_e\(e,1\)/.test(login), 'Domestic player query must pass is_domestic=1');
-    assert.ok(/\bse\([^;]+,"sdk",i,a,1\)/.test(login), 'Domestic SDK login must pass source=sdk and is_domestic=1');
+    // 1.0.4 replaced the two-argument `queryPlayer` call with a wrapper that
+    // forwards (cuid, token, cname) and a four-field request body, and moved the
+    // inland login call behind the same ten-argument `Login` helper as GLOBAL.
+    // The minified names change every release, so pin the request shape and the
+    // positional `is_domestic` literals instead of callee names.
+    assert.ok(
+      /function queryPlayer\(([$\w]+),([$\w]+),([$\w]+),([$\w]+)\)\{return jsonpClient\.post\("api\/auth\/player\/query",\{cuid:\1,is_domestic:\2,accessToken:\3,cname:\4\}\)\}/.test(main),
+      'Player query must keep is_domestic as its second request field',
+    );
+    assert.ok(/[$\w]+\([$\w]+,1,[$\w]+,[$\w]+\)/.test(login), 'Domestic player query must pass is_domestic=1');
+    assert.ok(/,"sdk",[^;]{1,80},1\)/.test(login), 'Domestic SDK login must pass source=sdk and is_domestic=1');
+    assert.ok(/,"sdk",[^;]{1,80},0\)/.test(login), 'Overseas SDK login must pass is_domestic=0');
     assert.ok(loginView.includes('handleInlandSDKLogin'), 'Login view must bind the domestic SDK callback');
     assert.ok(/\(\{link:\[\{rel:"stylesheet",href:[A-Za-z_$][\w$]*\}\],script:\[\{src:[A-Za-z_$][\w$]*/.test(loginView), 'Login view must load the embedded SDK assets');
     const scriptIsHttps = main.includes(`isdkSrc="${contract.auth.sdk.scriptUrl}"`);
@@ -71,10 +81,13 @@ export async function verifySourceContract(assetDirectory = path.join(root, prof
       'plugin:deep-link|get_current',
       'if(!assertPendingStateMatches(n.state))',
       'function assertPendingStateMatches(e){const t=readPendingState();return t?t===e:!1}',
-      'await queryPlayer(e,0)',
       'Login(e.cuid,e.puid,e.channelId,e.userId,e.userName,e.accessToken,"sdk",t,n,0)',
-      'await startOverseasBrowserLogin({lang:t})',
     ]) assert.ok(login.includes(value), `Missing global OAuth contract marker: ${value}`);
+    // 1.0.4 widened queryPlayer to (cuid, is_domestic, token, cname) and
+    // renamed the locale local in the browser-login entry, so pin the call
+    // shape rather than the minified argument names.
+    assert.ok(/await queryPlayer\(([$\w]+),0,([$\w]+),([$\w]+)\)/.test(login), 'Overseas player query must pass is_domestic=0');
+    assert.ok(/await startOverseasBrowserLogin\(\{lang:[$\w]+\}\)/.test(login), 'Global login must start the official browser OAuth flow');
     globalOAuthDelivery = verifyGlobalCallbackBridge(login, { prepared });
     assert.ok(loginView.includes('handleForeignSDKLogin'), 'Global login view must bind the browser OAuth entry point');
   }

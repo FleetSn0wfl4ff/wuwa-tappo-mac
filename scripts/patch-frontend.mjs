@@ -43,31 +43,67 @@ export function patchDomesticSdkUrls(source) {
   return patched;
 }
 
-export function patchDomesticLoginReload(source) {
-  const start = 'async function we(e=!1){if(E)return E;if(!e&&$())';
-  const end = 'async function me()';
-  const insertion = ',document.head.appendChild(t),r=window.setTimeout(';
-  const offset = source.indexOf(start);
-  const limit = source.indexOf(end, offset);
-  if (offset < 0 || limit < 0 || source.split(start).length !== 2) {
+// The forced-reload path is the only place that appends the KrSDK script tag.
+// Its identifiers are minified (`we`/`t`/`r` in 1.0.3, `ge`/`t`/`r` in 1.0.4),
+// so locate it by structure: the single `dataset.kuroSdkRetry` script tag, its
+// enclosing async loader function, and the append/setTimeout pair inside it.
+export function locateDomesticSdkLoader(source) {
+  const retry = [...source.matchAll(/([$\w]+)\.dataset\.kuroSdkRetry="true"/g)];
+  if (retry.length !== 1) {
     throw new Error('Original CN SDK reload function changed; reconcile the login reload patch before building.');
   }
-  const loader = source.slice(offset, limit);
-  if (!loader.includes('t.dataset.kuroSdkRetry="true"') || loader.split(insertion).length !== 2) {
+  const marker = retry[0];
+  const start = source.lastIndexOf('async function ', marker.index);
+  const header = start < 0 ? null : /^async function ([$\w]+)\(([$\w]+)=!1\)\{/.exec(source.slice(start));
+  if (!header) {
+    throw new Error('Original CN SDK reload function changed; reconcile the login reload patch before building.');
+  }
+  const next = source.indexOf('async function ', start + 1);
+  const end = next < 0 ? source.length : next;
+  const body = source.slice(start, end);
+  const insertionPattern = /,document\.head\.appendChild\(([$\w]+)\),([$\w]+)=window\.setTimeout\(/g;
+  const insertions = [...body.matchAll(insertionPattern)];
+  if (insertions.length !== 1 || insertions[0][1] !== marker[1]) {
     throw new Error('Original CN SDK script insertion changed; reconcile the login reload patch before building.');
   }
-  const replacement = ',e&&([...document.scripts].filter(s=>s.src===t.src).forEach(s=>s.remove()),document.getElementById("KrSDK")?.remove())' + insertion;
-  return source.slice(0, offset) + loader.replace(insertion, replacement) + source.slice(limit);
+  const [insertion, scriptVar, timerVar] = insertions[0];
+  return {
+    start,
+    end,
+    marker: insertionPattern,
+    insertion,
+    insertionIndex: start + insertions[0].index,
+    name: header[1],
+    forceVar: header[2],
+    scriptVar,
+    timerVar,
+    loader: body,
+  };
+}
+
+export function patchDomesticLoginReload(source) {
+  const { insertion, insertionIndex, forceVar, scriptVar } = locateDomesticSdkLoader(source);
+  const cleanup = `,${forceVar}&&([...document.scripts].filter(s=>s.src===${scriptVar}.src).forEach(s=>s.remove()),document.getElementById("KrSDK")?.remove())`;
+  return source.slice(0, insertionIndex) + cleanup + insertion + source.slice(insertionIndex + insertion.length);
+}
+
+// 1.0.3 routes the label through the component's own translation helper
+// (`le.value=t("setting_version_check_failed")`) instead of the module-scope
+// `n`, so capture that identifier rather than assuming its name. 1.0.4 also
+// added `resolveUpdateMissingMessage()` in the entry module, which calls
+// `i18n.global.t("setting_version_check_failed")` for the same key; selecting
+// the view by that bare call would now match two files, so the file selector
+// below reuses this exact component pattern instead.
+export const MAC_UPDATE_FEEDBACK_PATTERN = /if\(([$\w]+)\.kind==="error"\)\{([^{}]*?)([$\w]+)\.value=([$\w]+)\("setting_version_check_failed"\);return\}/g;
+
+export function matchesMacUpdateFeedback(source) {
+  return [...source.matchAll(MAC_UPDATE_FEEDBACK_PATTERN)].length === 1;
 }
 
 export function patchMacUpdateFeedback(source) {
-  // 1.0.3 routes the label through the component's own translation helper
-  // (`le.value=t("setting_version_check_failed")`) instead of the module-scope
-  // `n`, so capture that identifier rather than assuming its name.
-  const pattern = /if\(([$\w]+)\.kind==="error"\)\{([^{}]*?)([$\w]+)\.value=([$\w]+)\("setting_version_check_failed"\);return\}/g;
-  const matches = [...source.matchAll(pattern)];
+  const matches = [...source.matchAll(MAC_UPDATE_FEEDBACK_PATTERN)];
   if (matches.length !== 1) throw new Error('Original update feedback changed; reconcile the Mac update message before building.');
-  return source.replace(pattern, (_, error, before, target, translate) => `if(${error}.kind==="error"){${before}${target}.value=${error}.message||${translate}("setting_version_check_failed");return}`);
+  return source.replace(MAC_UPDATE_FEEDBACK_PATTERN, (_, error, before, target, translate) => `if(${error}.kind==="error"){${before}${target}.value=${error}.message||${translate}("setting_version_check_failed");return}`);
 }
 
 export function patchMacUpdater(source) {
