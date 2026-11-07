@@ -229,11 +229,11 @@ fn build_window(
         // hand (only the panel may be resized).
         window.set_resizable(label == "panel").map_err(err)?;
         if label == "panel" {
-            // Only the panel is moved by dragging its background. The login
-            // dialog is an ordinary form: background dragging there steals text
-            // selection, so it gets a dedicated drag strip instead (see the
-            // injected platform script).
-            allow_background_drag(&window)?;
+            // The panel is dragged by the official front-end handler, which
+            // ignores presses starting on inputs, labels, buttons and the panel
+            // content. Enabling AppKit's movable-by-background here as well made
+            // the window move while the opacity/scale sliders were dragged, so
+            // the platform layer stays out of it.
         }
     }
     if label == "panel" {
@@ -392,29 +392,6 @@ fn schedule_login_diagnostic(window: WebviewWindow) {
 })()"#;
         let _ = window.eval(script);
     });
-}
-
-/// Borderless auxiliary windows (panel, login, about…) cannot be dragged by a
-/// title bar. On macOS `isMovableByWindowBackground` restores the Windows
-/// behaviour where the dialog can be repositioned by dragging its background.
-#[cfg(target_os = "macos")]
-fn allow_background_drag(window: &WebviewWindow) -> Result<(), String> {
-    use objc2_app_kit::NSWindow;
-    let pointer = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
-    if pointer.is_null() {
-        return Err("window_ns_handle_unavailable".into());
-    }
-    // Windows are built from the main thread (see `dispatch`), so this stays on
-    // the AppKit main thread; the handle is only used within this scope.
-    unsafe {
-        (*pointer).setMovableByWindowBackground(true);
-    }
-    Ok(())
-}
-
-#[cfg(not(target_os = "macos"))]
-fn allow_background_drag(_window: &WebviewWindow) -> Result<(), String> {
-    Ok(())
 }
 
 fn show_aux(
